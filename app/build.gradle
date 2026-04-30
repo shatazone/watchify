@@ -42,3 +42,21 @@ application {
     // Define the main class for the application.
     mainClass = 'org.example.App'
 }
+
+dependencies {
+    implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+
+    implementation "org.apache.logging.log4j:log4j-api:${log4j2Version}"
+    implementation "org.apache.logging.log4j:log4j-core:${log4j2Version}"
+    implementation "org.apache.logging.log4j:log4j-slf4j2-impl:${log4j2Version}"
+
+    implementation "com.google.guava:guava:${guavaVersion}"
+
+    compileOnly "org.projectlombok:lombok:${lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+    testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+    testImplementation "org.awaitility:awaitility:${awaitilityVersion}"
+}
