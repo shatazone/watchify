@@ -12,13 +12,16 @@ import java.nio.file.attribute.BasicFileAttributes;
 @Slf4j
 public class FileStateFactory {
 
-    public FileState getFileState(Path file) throws IOException {
+    public FileState getFileState(Path file) {
         final BasicFileAttributes basicFileAttributes;
 
         try {
             basicFileAttributes = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         } catch (NoSuchFileException e) {
             log.trace("No such file or directory: {}", file);
+            return null;
+        } catch (IOException e) {
+            log.error("Error reading file: {}", file, e);
             return null;
         }
 

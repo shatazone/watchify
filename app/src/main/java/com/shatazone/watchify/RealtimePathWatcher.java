@@ -93,7 +93,7 @@ public class RealtimePathWatcher extends AbstractExecutionThreadService {
 
     private void requestInspection(Path path) {
         if (inspectionSink != null) {
-            inspectionSink.accept(new PathInspection(serviceName(), path));
+            inspectionSink.accept(new PathInspection(serviceName(), path, false));
         }
     }
 

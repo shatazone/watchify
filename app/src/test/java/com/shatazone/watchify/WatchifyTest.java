@@ -31,9 +31,10 @@ class WatchifyTest {
     @BeforeEach
     void setUp() throws IOException {
         final RealtimePathWatcher realtimePathWatcher = new RealtimePathWatcher(FileSystems.getDefault().newWatchService());
-        final InspectionService inspectionService = new InspectionService(Duration.ofSeconds(5));
+        final PathRegistry pathRegistry = new PathRegistry();
+        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, Duration.ofSeconds(5));
 
-        watchify = new Watchify(realtimePathWatcher, inspectionService);
+        watchify = new Watchify(inspectionService, pathRegistry);
         watchify.start();
     }
 
@@ -49,6 +50,10 @@ class WatchifyTest {
         final AtomicReference<FileEvent> fileEventRef = new AtomicReference<>();
 
         watchify.setListener(fileEvent -> {
+            if(fileEvent.fileState().pathType() == PathType.DIRECTORY) {
+                return;
+            }
+
             fileEventRef.set(fileEvent);
             countDownLatch.countDown();
         });
