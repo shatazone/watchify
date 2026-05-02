@@ -73,7 +73,8 @@ public class InspectionService extends AbstractIdleService {
             }
 
             dispatch(newFileEvent);
-            return directory;
+
+            return true;
         }
 
         final PendingEvent existingPendingEvent = stabilizedFutures.remove(inspection.path());
