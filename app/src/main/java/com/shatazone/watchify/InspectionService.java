@@ -2,7 +2,6 @@ package com.shatazone.watchify;
 
 import com.google.common.util.concurrent.AbstractIdleService;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -27,9 +26,6 @@ public class InspectionService extends AbstractIdleService {
     private final RealtimePathWatcher realtimePathWatcher;
     private final Duration stabilizationDelay;
 
-    @Setter
-    private com.shatazone.watchify.Listener listener;
-
     public boolean submit(PathInspection inspection) {
         if (!pathRegistry.shouldWatch(inspection.path())) {
             fileStates.remove(inspection.path());
@@ -48,8 +44,8 @@ public class InspectionService extends AbstractIdleService {
         }
 
         final FileEvent newFileEvent = new FileEvent(fileEventType, inspection.path(), currentFileState, inspection.requester());
-        final boolean directory = (currentFileState != null && currentFileState.pathType() == PathType.DIRECTORY)
-                || (lastSeenState != null && lastSeenState.pathType() == PathType.DIRECTORY);
+        final boolean directory = (currentFileState != null && currentFileState.isDirectory())
+                || (lastSeenState != null && lastSeenState.isDirectory());
 
         if (directory) {
             if (fileEventType == FileEventType.DELETED) {
@@ -123,10 +119,12 @@ public class InspectionService extends AbstractIdleService {
     }
 
     private void dispatch(FileEvent fileEvent) {
-        log.info("Dispatching FileEvent: {}", fileEvent);
-
-        if (listener != null) {
-            listener.onFileEvent(fileEvent);
+        for (FileEventListener fileEventListener : pathRegistry.getListenersOf(fileEvent.path())) {
+            try {
+                fileEventListener.onFileEvent(fileEvent);
+            } catch (Exception e) {
+                log.error("Error while dispatching FileEvent: {}", fileEvent, e);
+            }
         }
     }
 

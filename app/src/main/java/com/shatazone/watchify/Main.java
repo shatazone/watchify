@@ -4,7 +4,6 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.nio.file.FileSystems;
-import java.nio.file.Paths;
 import java.time.Duration;
 
 @Slf4j
@@ -15,15 +14,11 @@ public class Main {
         final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, Duration.ofSeconds(10));
 
         final Watchify watchify = new Watchify(inspectionService, pathRegistry);
-        watchify.watch(Paths.get("E:\\ws-test"));
-        watchify.start();
-
-        watchify.setListener(new Listener() {
-
-            @Override
-            public void onFileEvent(FileEvent fileEvent) {
-                log.info("Hello file event: {}", fileEvent);
-            }
+        final PathRegistry.Subscription subscription = watchify.subscribe("E:/ws-test/**/*.trigger", fileEvent -> {
+            log.info(">> Captured file event: {}", fileEvent);
         });
+
+        watchify.start();
+        log.info("Started watching file event");
     }
 }

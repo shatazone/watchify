@@ -1,8 +1,7 @@
 package com.shatazone.watchify;
 
+import com.shatazone.watchify.globs.GlobPathPattern;
 import lombok.extern.slf4j.Slf4j;
-
-import java.nio.file.Path;
 
 @Slf4j
 public class Watchify {
@@ -14,24 +13,15 @@ public class Watchify {
         this.pathRegistry = pathRegistry;
     }
 
-    public void setListener(Listener listener) {
-        inspectionService.setListener(listener);
-    }
-
     public void start() {
         inspectionService.startAsync().awaitRunning();
     }
 
-    public void watch(Path rootPath) {
-        if(pathRegistry.addRoot(rootPath)) {
-            inspectionService.submit(new PathInspection("Watchify", rootPath, true));
-        }
-    }
-
-    public void unwatch(Path rootPath) {
-        if(pathRegistry.removeRoot(rootPath)) {
-            inspectionService.submit(new PathInspection("Watchify", rootPath,  false));
-        }
+    public PathRegistry.Subscription subscribe(String globPattern, FileEventListener fileEventListener) {
+        final GlobPathPattern globPathPattern = GlobPathPattern.parse(globPattern);
+        PathRegistry.Subscription subscribe = pathRegistry.subscribe(globPathPattern, fileEventListener);
+        inspectionService.submit(new PathInspection("Watchify", globPathPattern.getDirectory(), true));
+        return subscribe;
     }
 
     public void shutdown() {

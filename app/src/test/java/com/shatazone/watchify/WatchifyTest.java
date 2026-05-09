@@ -41,7 +41,6 @@ class WatchifyTest {
     @AfterEach
     void tearDown() {
         watchify.shutdown();
-        watchify.setListener(null);
     }
 
     @Test
@@ -49,7 +48,7 @@ class WatchifyTest {
         final CountDownLatch countDownLatch = new CountDownLatch(1);
         final AtomicReference<FileEvent> fileEventRef = new AtomicReference<>();
 
-        watchify.setListener(fileEvent -> {
+        watchify.subscribe(tempDir.normalize().toAbsolutePath() + "/**", fileEvent -> {
             if(fileEvent.fileState().pathType() == PathType.DIRECTORY) {
                 return;
             }
@@ -57,8 +56,6 @@ class WatchifyTest {
             fileEventRef.set(fileEvent);
             countDownLatch.countDown();
         });
-
-        watchify.watch(tempDir);
 
         final Path newFile = tempDir.resolve("myfile.txt");
         Files.writeString(newFile, "hello test");
@@ -72,12 +69,8 @@ class WatchifyTest {
 
     @Test
     void test2() throws IOException {
-        watchify.watch(tempDir);
-
         final List<FileEvent> fileEventList = new ArrayList<>();
-
-        watchify.setListener(fileEventList::add);
-
+        watchify.subscribe(tempDir.normalize().toAbsolutePath() + "/**", fileEventList::add);
 
         final Path newFile = tempDir.resolve("myfile.txt");
         Files.writeString(newFile, "hello test");

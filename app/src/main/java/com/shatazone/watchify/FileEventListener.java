@@ -1,5 +1,5 @@
 package com.shatazone.watchify;
 
-public interface Listener {
+public interface FileEventListener {
     void onFileEvent(FileEvent fileEvent);
 }
