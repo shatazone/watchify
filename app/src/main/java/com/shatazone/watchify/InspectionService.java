@@ -7,11 +7,9 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
-import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Stream;
 
@@ -19,6 +17,8 @@ import java.util.stream.Stream;
 @RequiredArgsConstructor
 public class InspectionService extends AbstractIdleService {
     private final Map<Path, FileState> fileStates = new ConcurrentHashMap<>();
+    private final Map<Path, Set<Path>> directoryMap = new ConcurrentHashMap<>();
+
     private final FileStateFactory fileStateFactory = new FileStateFactory();
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     private final Map<Path, PendingEvent> stabilizedFutures = new ConcurrentHashMap<>();
@@ -27,91 +27,121 @@ public class InspectionService extends AbstractIdleService {
     private final Duration stabilizationDelay;
 
     public boolean submit(PathInspection inspection) {
-        if (!pathRegistry.shouldWatch(inspection.path())) {
-            fileStates.remove(inspection.path());
-            return false;
-        }
-
         final FileState currentFileState = fileStateFactory.getFileState(inspection.path());
-        final FileState lastSeenState = currentFileState == null
-                ? fileStates.remove(inspection.path())
-                : fileStates.put(inspection.path(), currentFileState);
-
-        final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
-
-        if (fileEventType == null) {
-            return false;
-        }
-
-        final FileEvent newFileEvent = new FileEvent(fileEventType, inspection.path(), currentFileState, inspection.requester());
+        final FileState lastSeenState = fileStates.get(inspection.path());
         final boolean directory = (currentFileState != null && currentFileState.isDirectory())
                 || (lastSeenState != null && lastSeenState.isDirectory());
 
         if (directory) {
+            if (!pathRegistry.shouldWatchDirectory(inspection.path())) {
+                // TODO state cleanup ?
+                return false;
+            }
+
+            final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
+
             if (fileEventType == FileEventType.DELETED) {
                 realtimePathWatcher.unwatch(inspection.path());
+                directoryMap.remove(inspection.path());
             } else if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
                 try {
                     realtimePathWatcher.watch(inspection.path());
+                    directoryMap.put(inspection.path(), new HashSet<>());
                 } catch (final IOException e) {
                     log.error("Error watching directory: {}", inspection.path(), e);
                 }
             }
 
-            try (Stream<Path> stream = Files.list(inspection.path())) {
-                stream.forEach(path -> {
-                    submit(new PathInspection(inspection.requester(), path, inspection.discoveryMode()));
-                });
-            } catch (NoSuchFileException | NotDirectoryException e) {
-                log.trace("No such directory {}", inspection.path());
+            Stream<Path> lastSeenSubPaths = directoryMap.getOrDefault(inspection.path(), Collections.emptySet()).stream();
+            Stream<Path> currentlySeenSubPaths;
+
+            try {
+                currentlySeenSubPaths = Files.list(inspection.path());
+            } catch (NoSuchFileException e) {
+                currentlySeenSubPaths = Stream.empty();
             } catch (IOException e) {
-                log.trace("Error while reading directory {}", inspection.path(), e);
+                log.warn("Error listing files in path {}", inspection.path(), e);
+                currentlySeenSubPaths = Stream.empty();
             }
 
-            dispatch(newFileEvent);
-
-            return true;
-        }
-
-        final PendingEvent existingPendingEvent = stabilizedFutures.remove(inspection.path());
-
-        if (existingPendingEvent != null) {
-            existingPendingEvent.scheduledFuture().cancel(false);
-
-            if ((existingPendingEvent.fileEvent().type() == FileEventType.CREATED || existingPendingEvent.fileEvent().type() == FileEventType.DISCOVERED) && newFileEvent.type() == FileEventType.MODIFIED) {
-                final FileEvent fileEvent = new FileEvent(
-                        existingPendingEvent.fileEvent().type(),
-                        existingPendingEvent.fileEvent().path(),
-                        newFileEvent.fileState(),
-                        existingPendingEvent.fileEvent().source()
-                );
-
-                log.info("Restabilizing file event: {}", fileEvent);
-                stabilizeFileEvent(fileEvent);
-                return directory;
-            } else {
-                dispatch(existingPendingEvent.fileEvent());
+            try (Stream<Path> subPaths = Stream.concat(lastSeenSubPaths, currentlySeenSubPaths)) {
+                subPaths.distinct().forEach(subPath -> {
+                    submit(new PathInspection(inspection.requester(), subPath, inspection.discoveryMode()));
+                });
             }
-        }
 
-        if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
-            log.info("Stabilizing file event: {}", newFileEvent);
-            stabilizeFileEvent(newFileEvent);
         } else {
-            dispatch(newFileEvent);
-        }
+            if (!pathRegistry.shouldWatchFile(inspection.path())) {
+                // TODO cleanup ?
+                return false;
+            }
 
+            final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
+
+            if (fileEventType == FileEventType.DELETED) {
+                fileStates.remove(inspection.path());
+                directoryMap.get(inspection.path().getParent()).remove(inspection.path());
+
+                if (directoryMap.get(inspection.path().getParent()).isEmpty()) {
+                    realtimePathWatcher.unwatch(inspection.path());
+                }
+            } else {
+                fileStates.put(inspection.path(), currentFileState);
+                directoryMap.get(inspection.path().getParent()).add(inspection.path());
+            }
+
+            if (fileEventType == null) {
+                return false;
+            }
+
+            final FileEvent newFileEvent = new FileEvent(fileEventType, inspection.path(), currentFileState, inspection.requester());
+
+            final PendingEvent existingPendingEvent = stabilizedFutures.remove(inspection.path());
+
+            if (existingPendingEvent != null) {
+                existingPendingEvent.scheduledFuture().cancel(false);
+
+                if ((existingPendingEvent.fileEvent().type() == FileEventType.CREATED || existingPendingEvent.fileEvent().type() == FileEventType.DISCOVERED) && newFileEvent.type() == FileEventType.MODIFIED) {
+                    final FileEvent fileEvent = new FileEvent(
+                            existingPendingEvent.fileEvent().type(),
+                            existingPendingEvent.fileEvent().path(),
+                            newFileEvent.fileState(),
+                            existingPendingEvent.fileEvent().source()
+                    );
+
+                    log.info("Restabilizing file event: {}", fileEvent);
+                    stabilizeFileEvent(fileEvent);
+                    return directory;
+                } else {
+                    dispatch(existingPendingEvent.fileEvent());
+                }
+            }
+
+            if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
+                log.info("Stabilizing file event: {}", newFileEvent);
+                stabilizeFileEvent(newFileEvent);
+            } else {
+                dispatch(newFileEvent);
+            }
+
+        }
         return true;
     }
 
     private void stabilizeFileEvent(FileEvent fileEvent) {
+        final long nowMillis = System.currentTimeMillis();
+        final long elapsedSinceLastModificationMillis  = nowMillis - fileEvent.fileState().lastModifiedMillis();
+        final long remainingStabilizationDelayMillis  = Math.max(stabilizationDelay.toMillis() - elapsedSinceLastModificationMillis , 0);
+
+        log.info("Remaining stabilization delay: {} ms", remainingStabilizationDelayMillis);
+
         final ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(() -> {
             try {
                 dispatch(fileEvent);
             } finally {
                 stabilizedFutures.remove(fileEvent.path());
             }
-        }, stabilizationDelay.toMillis(), TimeUnit.MILLISECONDS);
+        }, remainingStabilizationDelayMillis , TimeUnit.MILLISECONDS);
 
         final PendingEvent pendingEvent = new PendingEvent(fileEvent, scheduledFuture);
 

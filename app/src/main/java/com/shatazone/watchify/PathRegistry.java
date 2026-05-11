@@ -41,7 +41,7 @@ public class PathRegistry {
         };
     }
 
-    public boolean shouldWatch(Path path) {
+    public boolean shouldWatchDirectory(Path path) {
         for (Map.Entry<Path, MonitoredRoot> entry : monitoredRoots.entrySet()) {
             final Path rootPath = entry.getKey();
 
@@ -49,7 +49,25 @@ public class PathRegistry {
                 final MonitoredRoot monitoredRoot = entry.getValue();
 
                 for(FileEventListenerGroup fileEventListenerGroup : monitoredRoot.listenerGroup.values()) {
-                    if(fileEventListenerGroup.pathPattern.matchesPrefix(path) || fileEventListenerGroup.pathPattern.matches(path)) {
+                    if(fileEventListenerGroup.pathPattern.matchesPrefix(path)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public boolean shouldWatchFile(Path path) {
+        for (Map.Entry<Path, MonitoredRoot> entry : monitoredRoots.entrySet()) {
+            final Path rootPath = entry.getKey();
+
+            if (path.startsWith(rootPath)) {
+                final MonitoredRoot monitoredRoot = entry.getValue();
+
+                for(FileEventListenerGroup fileEventListenerGroup : monitoredRoot.listenerGroup.values()) {
+                    if(fileEventListenerGroup.pathPattern.matches(path)) {
                         return true;
                     }
                 }
