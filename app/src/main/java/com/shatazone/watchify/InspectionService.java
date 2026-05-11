@@ -8,9 +8,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -20,11 +19,9 @@ public class InspectionService extends AbstractIdleService {
     private final Map<Path, Set<Path>> directoryMap = new ConcurrentHashMap<>();
 
     private final FileStateFactory fileStateFactory = new FileStateFactory();
-    private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
-    private final Map<Path, PendingEvent> stabilizedFutures = new ConcurrentHashMap<>();
     private final PathRegistry pathRegistry;
     private final RealtimePathWatcher realtimePathWatcher;
-    private final Duration stabilizationDelay;
+    private final FileEventStabilizer fileEventStabilizer;
 
     public boolean submit(PathInspection inspection) {
         final FileState currentFileState = fileStateFactory.getFileState(inspection.path());
@@ -96,56 +93,14 @@ public class InspectionService extends AbstractIdleService {
 
             final FileEvent newFileEvent = new FileEvent(fileEventType, inspection.path(), currentFileState, inspection.requester());
 
-            final PendingEvent existingPendingEvent = stabilizedFutures.remove(inspection.path());
+            fileEventStabilizer.stabilize(newFileEvent)
+                    .thenAccept(fileEvent -> {
+                        dispatch(newFileEvent);
+                    });
 
-            if (existingPendingEvent != null) {
-                existingPendingEvent.scheduledFuture().cancel(false);
-
-                if ((existingPendingEvent.fileEvent().type() == FileEventType.CREATED || existingPendingEvent.fileEvent().type() == FileEventType.DISCOVERED) && newFileEvent.type() == FileEventType.MODIFIED) {
-                    final FileEvent fileEvent = new FileEvent(
-                            existingPendingEvent.fileEvent().type(),
-                            existingPendingEvent.fileEvent().path(),
-                            newFileEvent.fileState(),
-                            existingPendingEvent.fileEvent().source()
-                    );
-
-                    log.info("Restabilizing file event: {}", fileEvent);
-                    stabilizeFileEvent(fileEvent);
-                    return directory;
-                } else {
-                    dispatch(existingPendingEvent.fileEvent());
-                }
-            }
-
-            if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
-                log.info("Stabilizing file event: {}", newFileEvent);
-                stabilizeFileEvent(newFileEvent);
-            } else {
-                dispatch(newFileEvent);
-            }
 
         }
         return true;
-    }
-
-    private void stabilizeFileEvent(FileEvent fileEvent) {
-        final long nowMillis = System.currentTimeMillis();
-        final long elapsedSinceLastModificationMillis  = nowMillis - fileEvent.fileState().lastModifiedMillis();
-        final long remainingStabilizationDelayMillis  = Math.max(stabilizationDelay.toMillis() - elapsedSinceLastModificationMillis , 0);
-
-        log.info("Remaining stabilization delay: {} ms", remainingStabilizationDelayMillis);
-
-        final ScheduledFuture<?> scheduledFuture = scheduledExecutorService.schedule(() -> {
-            try {
-                dispatch(fileEvent);
-            } finally {
-                stabilizedFutures.remove(fileEvent.path());
-            }
-        }, remainingStabilizationDelayMillis , TimeUnit.MILLISECONDS);
-
-        final PendingEvent pendingEvent = new PendingEvent(fileEvent, scheduledFuture);
-
-        stabilizedFutures.put(fileEvent.path(), pendingEvent);
     }
 
     private void dispatch(FileEvent fileEvent) {

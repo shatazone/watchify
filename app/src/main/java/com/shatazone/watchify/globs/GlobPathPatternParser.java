@@ -70,6 +70,7 @@ public class GlobPathPatternParser {
     static String normalizePattern(String pattern) {
         Objects.requireNonNull(pattern, "pattern must not be null");
 
+
         pattern = pattern.trim().replace('\\', '/');
 
         if (pattern.isEmpty() || pattern.equals("**")) {
@@ -121,7 +122,7 @@ public class GlobPathPatternParser {
 
         final Set<String> permutations = new HashSet<>();
 
-        List<String> parts = new ArrayList<>();
+        final List<String> parts = new ArrayList<>();
 
         int start = 0;
 
@@ -157,7 +158,7 @@ public class GlobPathPatternParser {
 
         generateGlobVariants(parts, index + 1, newPrefix, permutations);
 
-        if (segment.equals("**") && index < parts.size()) {
+        if (segment.equals("**")) {
             generateGlobVariants(parts, index + 1, prefix, permutations);
         }
     }

@@ -32,7 +32,8 @@ class WatchifyTest {
     void setUp() throws IOException {
         final RealtimePathWatcher realtimePathWatcher = new RealtimePathWatcher(FileSystems.getDefault().newWatchService());
         final PathRegistry pathRegistry = new PathRegistry();
-        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, Duration.ofSeconds(5));
+        final FileEventStabilizer fileEventStabilizer = new FileEventStabilizer(Duration.ofSeconds(5));
+        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, fileEventStabilizer);
 
         watchify = new Watchify(inspectionService, pathRegistry);
         watchify.start();
@@ -72,7 +73,8 @@ class WatchifyTest {
         final List<FileEvent> fileEventList = new ArrayList<>();
         watchify.subscribe(tempDir.normalize().toAbsolutePath() + "/**", fileEventList::add);
 
-        final Path newFile = tempDir.resolve("myfile.txt");
+        final Path newFile = tempDir.resolve("asda/myfile.txt");
+        Files.createDirectories(newFile.getParent());
         Files.writeString(newFile, "hello test");
 
 

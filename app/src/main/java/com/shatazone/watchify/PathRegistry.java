@@ -49,7 +49,7 @@ public class PathRegistry {
                 final MonitoredRoot monitoredRoot = entry.getValue();
 
                 for(FileEventListenerGroup fileEventListenerGroup : monitoredRoot.listenerGroup.values()) {
-                    if(fileEventListenerGroup.pathPattern.matchesPrefix(path)) {
+                    if(fileEventListenerGroup.pathPattern.matchesPrefix(path) || fileEventListenerGroup.pathPattern.matches(path)) {
                         return true;
                     }
                 }
