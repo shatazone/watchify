@@ -3,6 +3,7 @@ package com.shatazone.watchify;
 import com.google.common.util.concurrent.AbstractIdleService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -35,35 +36,11 @@ public class InspectionService extends AbstractIdleService {
                 return false;
             }
 
-            final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
-
-            if (fileEventType == FileEventType.DELETED) {
-                realtimePathWatcher.unwatch(inspection.path());
-                directoryMap.remove(inspection.path());
-            } else if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
-                try {
-                    realtimePathWatcher.watch(inspection.path());
-                    directoryMap.put(inspection.path(), new HashSet<>());
-                } catch (final IOException e) {
-                    log.error("Error watching directory: {}", inspection.path(), e);
-                }
-            }
-
-            Stream<Path> lastSeenSubPaths = directoryMap.getOrDefault(inspection.path(), Collections.emptySet()).stream();
-            Stream<Path> currentlySeenSubPaths;
-
-            try {
-                currentlySeenSubPaths = Files.list(inspection.path());
-            } catch (NoSuchFileException e) {
-                currentlySeenSubPaths = Stream.empty();
-            } catch (IOException e) {
-                log.warn("Error listing files in path {}", inspection.path(), e);
-                currentlySeenSubPaths = Stream.empty();
-            }
-
-            try (Stream<Path> subPaths = Stream.concat(lastSeenSubPaths, currentlySeenSubPaths)) {
-                subPaths.distinct().forEach(subPath -> {
-                    submit(new PathInspection(inspection.requester(), subPath, inspection.discoveryMode()));
+            try (Stream<Path> pathStream = inspectDirectory(inspection, lastSeenState, currentFileState)) {
+                pathStream.distinct().forEach(subPath -> {
+                    submit(
+                            new PathInspection(inspection.requester(), subPath, inspection.discoveryMode())
+                    );
                 });
             }
 
@@ -73,34 +50,76 @@ public class InspectionService extends AbstractIdleService {
                 return false;
             }
 
-            final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
+            final FileEvent fileEvent = inspectFile(inspection, lastSeenState, currentFileState);
 
-            if (fileEventType == FileEventType.DELETED) {
-                fileStates.remove(inspection.path());
-                directoryMap.get(inspection.path().getParent()).remove(inspection.path());
-
-                if (directoryMap.get(inspection.path().getParent()).isEmpty()) {
-                    realtimePathWatcher.unwatch(inspection.path());
-                }
-            } else {
-                fileStates.put(inspection.path(), currentFileState);
-                directoryMap.get(inspection.path().getParent()).add(inspection.path());
-            }
-
-            if (fileEventType == null) {
+            if (fileEvent == null) {
                 return false;
             }
 
-            final FileEvent newFileEvent = new FileEvent(fileEventType, inspection.path(), currentFileState, inspection.requester());
-
-            fileEventStabilizer.stabilize(newFileEvent)
-                    .thenAccept(fileEvent -> {
-                        dispatch(newFileEvent);
-                    });
-
-
+            fileEventStabilizer.stabilize(fileEvent)
+                    .thenAccept(this::dispatch);
         }
+
         return true;
+    }
+
+    private Stream<Path> inspectDirectory(PathInspection inspection, FileState lastSeenState, FileState currentFileState) {
+        final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
+
+        if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
+            try {
+                realtimePathWatcher.watch(inspection.path());
+                directoryMap.put(inspection.path(), new HashSet<>());
+            } catch (final IOException e) {
+                log.error("Error watching directory: {}", inspection.path(), e);
+            }
+        } else if (fileEventType == FileEventType.DELETED) {
+            realtimePathWatcher.unwatch(inspection.path());
+            directoryMap.remove(inspection.path());
+        }
+
+        Stream<Path> lastSeenSubPaths = directoryMap.getOrDefault(inspection.path(), Collections.emptySet()).stream();
+        Stream<Path> currentlySeenSubPaths;
+
+        try {
+            currentlySeenSubPaths = Files.list(inspection.path());
+        } catch (NoSuchFileException e) {
+            currentlySeenSubPaths = Stream.empty();
+        } catch (IOException e) {
+            log.warn("Error listing files in path {}", inspection.path(), e);
+            currentlySeenSubPaths = Stream.empty();
+        }
+
+        return Stream.concat(lastSeenSubPaths, currentlySeenSubPaths)
+                .distinct();
+    }
+
+    private @Nullable FileEvent inspectFile(PathInspection inspection, FileState lastSeenState, FileState currentFileState) {
+        final Path path = inspection.path();
+        final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
+
+        if (fileEventType == null) {
+            return null;
+        }
+
+        final Path parentPath = path.getParent();
+        final Set<Path> directoryEntries = directoryMap.get(parentPath);
+
+        if (fileEventType == FileEventType.DELETED) {
+            fileStates.remove(path);
+            directoryEntries.remove(path);
+
+        } else {
+            fileStates.put(path, currentFileState);
+            directoryEntries.add(path);
+        }
+
+        return new FileEvent(
+                fileEventType,
+                path,
+                currentFileState,
+                inspection.requester()
+        );
     }
 
     private void dispatch(FileEvent fileEvent) {
