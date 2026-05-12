@@ -9,6 +9,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class PathRegistry {
     private final Map<Path, MonitoredRoot> monitoredRoots = new ConcurrentHashMap<>();
 
+    public List<Path> getMonitoredRoots() {
+        return new ArrayList<>(monitoredRoots.keySet());
+    }
+
     public Subscription subscribe(final GlobPathPattern globPathPattern, FileEventListener fileEventListener) {
         final String subscriptionKey = globPathPattern.getPattern();
 
@@ -115,9 +119,5 @@ public class PathRegistry {
         private MonitoredRoot(Path rootPath) {
             this(rootPath, new ConcurrentHashMap<>());
         }
-    }
-
-    public interface Subscription {
-        void cancel();
     }
 }

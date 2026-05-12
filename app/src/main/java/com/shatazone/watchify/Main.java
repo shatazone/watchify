@@ -15,7 +15,7 @@ public class Main {
         final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, fileEventStabilizer, 100_000);
 
         final Watchify watchify = new Watchify(inspectionService, pathRegistry);
-        final PathRegistry.Subscription subscription = watchify.subscribe("E:/ws-test/**/*.trigger", fileEvent -> {
+        final Subscription subscription = watchify.subscribe("E:/ws-test/**/*.trigger", fileEvent -> {
             log.info(">> Captured file event: {}", fileEvent);
         });
 

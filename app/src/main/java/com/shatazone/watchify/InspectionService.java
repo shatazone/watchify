@@ -10,10 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.stream.Stream;
 
 @Slf4j
@@ -27,7 +24,7 @@ public class InspectionService extends AbstractExecutionThreadService {
     private final RealtimePathWatcher realtimePathWatcher;
     private final FileEventStabilizer fileEventStabilizer;
 
-    private final BlockingQueue<PathInspection> inspectionQueue;
+    private final BlockingQueue<PendingInspection> inspectionQueue;
     private final Set<Path> dedup = new HashSet<>();
 
     public InspectionService(PathRegistry pathRegistry, RealtimePathWatcher realtimePathWatcher, FileEventStabilizer fileEventStabilizer, int queueCapacity) {
@@ -40,21 +37,31 @@ public class InspectionService extends AbstractExecutionThreadService {
     @Override
     protected void run() throws InterruptedException {
         while (isRunning()) {
-            final PathInspection inspection = inspectionQueue.poll(500, TimeUnit.MILLISECONDS);
+            final PendingInspection pendingInspection = inspectionQueue.poll(500, TimeUnit.MILLISECONDS);
 
-            if (inspection == null) {
+            if (pendingInspection == null) {
                 continue;
             }
 
+            final Inspection inspection = pendingInspection.inspection();
+
             try {
-                inspect(inspection);
+                inspect(pendingInspection);
             } finally {
                 dedup.remove(inspection.path());
+                pendingInspection.scope().arrive();
             }
         }
     }
 
-    public void enqueue(PathInspection inspection) {
+    public CompletableFuture<Void> enqueue(Inspection inspection) {
+        final InspectionScope scope = new InspectionScope();
+        enqueue(new PendingInspection(inspection, scope));
+        return scope.future();
+    }
+
+    private void enqueue(PendingInspection pendingInspection) {
+        final Inspection inspection = pendingInspection.inspection();
         final Path path = inspection.path();
 
         if (!dedup.add(path)) {
@@ -64,6 +71,7 @@ public class InspectionService extends AbstractExecutionThreadService {
 
         final FileState currentFileState = fileStateFactory.getFileState(path);
         final FileState lastSeenState = fileStates.get(path);
+
         final boolean isDirectory = (currentFileState != null && currentFileState.isDirectory())
                 || (lastSeenState != null && lastSeenState.isDirectory());
 
@@ -81,8 +89,11 @@ public class InspectionService extends AbstractExecutionThreadService {
             return;
         }
 
-        if (!inspectionQueue.offer(inspection)) {
+        pendingInspection.scope().register();
+        if (!inspectionQueue.offer(pendingInspection)) {
             dedup.remove(path);
+            pendingInspection.scope().arrive();
+
             log.warn(
                     "Inspection queue full, dropping inspection: {}",
                     inspection
@@ -90,7 +101,8 @@ public class InspectionService extends AbstractExecutionThreadService {
         }
     }
 
-    public boolean inspect(PathInspection inspection) {
+    private boolean inspect(PendingInspection pendingInspection) {
+        final Inspection inspection = pendingInspection.inspection();
         final FileState currentFileState = fileStateFactory.getFileState(inspection.path());
         final FileState lastSeenState = fileStates.get(inspection.path());
         final boolean directory = (currentFileState != null && currentFileState.isDirectory())
@@ -105,7 +117,10 @@ public class InspectionService extends AbstractExecutionThreadService {
             try (Stream<Path> pathStream = inspectDirectory(inspection, lastSeenState, currentFileState)) {
                 pathStream.forEach(subPath -> {
                     enqueue(
-                            new PathInspection(inspection.requester(), subPath, inspection.discoveryMode())
+                            new PendingInspection(
+                                    new Inspection(inspection.requester(), subPath, inspection.discoveryMode())
+                                    , pendingInspection.scope()
+                            )
                     );
                 });
             }
@@ -129,7 +144,7 @@ public class InspectionService extends AbstractExecutionThreadService {
         return true;
     }
 
-    private Stream<Path> inspectDirectory(PathInspection inspection, FileState lastSeenState, FileState currentFileState) {
+    private Stream<Path> inspectDirectory(Inspection inspection, FileState lastSeenState, FileState currentFileState) {
         final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
 
         if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
@@ -160,7 +175,7 @@ public class InspectionService extends AbstractExecutionThreadService {
                 .distinct();
     }
 
-    private @Nullable FileEvent inspectFile(PathInspection inspection, FileState lastSeenState, FileState currentFileState) {
+    private @Nullable FileEvent inspectFile(Inspection inspection, FileState lastSeenState, FileState currentFileState) {
         final Path path = inspection.path();
         final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
 
@@ -227,5 +242,9 @@ public class InspectionService extends AbstractExecutionThreadService {
     @Override
     protected void shutDown() {
         realtimePathWatcher.stopAsync().awaitTerminated();
+    }
+
+    private record PendingInspection(Inspection inspection, InspectionScope scope) {
+
     }
 }
