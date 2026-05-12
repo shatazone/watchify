@@ -13,7 +13,7 @@ public class PathRegistry {
         return new ArrayList<>(monitoredRoots.keySet());
     }
 
-    public Subscription subscribe(final GlobPathPattern globPathPattern, FileEventListener fileEventListener) {
+    public void register(GlobPathPattern globPathPattern, FileEventListener fileEventListener) {
         final String subscriptionKey = globPathPattern.getPattern();
 
         monitoredRoots.compute(globPathPattern.getDirectory(), (path, existing) -> {
@@ -26,23 +26,22 @@ public class PathRegistry {
 
             return monitoredRoot;
         });
+    }
 
-        return new Subscription() {
-            @Override
-            public void cancel() {
-                final MonitoredRoot monitoredRoot = monitoredRoots.get(globPathPattern.getDirectory());
-                final FileEventListenerGroup fileEventListenerGroup = monitoredRoot.listenerGroup().get(subscriptionKey);
-                fileEventListenerGroup.listeners().remove(fileEventListener);
+    // TODO should be simpler than this
+    public void unregister(GlobPathPattern globPathPattern, FileEventListener fileEventListener) {
+        final String subscriptionKey = globPathPattern.getPattern();
+        final MonitoredRoot monitoredRoot = monitoredRoots.get(globPathPattern.getDirectory());
+        final FileEventListenerGroup fileEventListenerGroup = monitoredRoot.listenerGroup().get(subscriptionKey);
+        fileEventListenerGroup.listeners().remove(fileEventListener);
 
-                if(fileEventListenerGroup.listeners().isEmpty()) {
-                    monitoredRoot.listenerGroup().remove(subscriptionKey, fileEventListenerGroup);
-                }
+        if(fileEventListenerGroup.listeners().isEmpty()) {
+            monitoredRoot.listenerGroup().remove(subscriptionKey, fileEventListenerGroup);
+        }
 
-                if(monitoredRoot.listenerGroup().isEmpty()) {
-                    monitoredRoots.remove(globPathPattern.getDirectory(),  monitoredRoot);
-                }
-            }
-        };
+        if(monitoredRoot.listenerGroup().isEmpty()) {
+            monitoredRoots.remove(globPathPattern.getDirectory(),  monitoredRoot);
+        }
     }
 
     public boolean shouldWatchDirectory(Path path) {

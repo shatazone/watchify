@@ -42,13 +42,26 @@ public class Watchify {
 
     public Subscription subscribe(String globPattern, FileEventListener fileEventListener) {
         final GlobPathPattern globPathPattern = GlobPathPattern.parse(globPattern);
-        final Subscription subscription = pathRegistry.subscribe(globPathPattern, fileEventListener);
+        pathRegistry.register(globPathPattern, fileEventListener);
 
+        final CompletableFuture<Void> future;
         if(inspectionService.isRunning()) {
-            inspectionService.enqueue(new Inspection("Watchify", globPathPattern.getDirectory(), true));
+            future = inspectionService.enqueue(new Inspection("Watchify", globPathPattern.getDirectory(), true));
+        } else {
+            future = CompletableFuture.completedFuture(null);
         }
 
-        return subscription;
+        return new Subscription() {
+            @Override
+            public void awaitReady() {
+                future.join();
+            }
+
+            @Override
+            public void cancel() {
+                pathRegistry.unregister(globPathPattern, fileEventListener);
+            }
+        };
     }
 
     public void shutdown() {
