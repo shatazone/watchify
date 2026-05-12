@@ -20,7 +20,7 @@ public class Watchify {
     public PathRegistry.Subscription subscribe(String globPattern, FileEventListener fileEventListener) {
         final GlobPathPattern globPathPattern = GlobPathPattern.parse(globPattern);
         PathRegistry.Subscription subscribe = pathRegistry.subscribe(globPathPattern, fileEventListener);
-        inspectionService.submit(new PathInspection("Watchify", globPathPattern.getDirectory(), true));
+        inspectionService.enqueue(new PathInspection("Watchify", globPathPattern.getDirectory(), true));
         return subscribe;
     }
 

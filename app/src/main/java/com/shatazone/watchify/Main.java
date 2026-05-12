@@ -12,7 +12,7 @@ public class Main {
         final RealtimePathWatcher realtimePathWatcher = new RealtimePathWatcher(FileSystems.getDefault().newWatchService());
         final PathRegistry pathRegistry = new PathRegistry();
         final FileEventStabilizer fileEventStabilizer = new FileEventStabilizer(Duration.ofSeconds(20));
-        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, fileEventStabilizer);
+        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, fileEventStabilizer, 100_000);
 
         final Watchify watchify = new Watchify(inspectionService, pathRegistry);
         final PathRegistry.Subscription subscription = watchify.subscribe("E:/ws-test/**/*.trigger", fileEvent -> {

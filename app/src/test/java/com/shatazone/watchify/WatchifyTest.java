@@ -33,7 +33,7 @@ class WatchifyTest {
         final RealtimePathWatcher realtimePathWatcher = new RealtimePathWatcher(FileSystems.getDefault().newWatchService());
         final PathRegistry pathRegistry = new PathRegistry();
         final FileEventStabilizer fileEventStabilizer = new FileEventStabilizer(Duration.ofSeconds(5));
-        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, fileEventStabilizer);
+        final InspectionService inspectionService = new InspectionService(pathRegistry, realtimePathWatcher, fileEventStabilizer, 100_000);
 
         watchify = new Watchify(inspectionService, pathRegistry);
         watchify.start();

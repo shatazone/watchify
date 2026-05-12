@@ -1,6 +1,6 @@
 package com.shatazone.watchify;
 
-import com.google.common.util.concurrent.AbstractIdleService;
+import com.google.common.util.concurrent.AbstractExecutionThreadService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
@@ -10,12 +10,15 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 @Slf4j
 @RequiredArgsConstructor
-public class InspectionService extends AbstractIdleService {
+public class InspectionService extends AbstractExecutionThreadService {
     private final Map<Path, FileState> fileStates = new ConcurrentHashMap<>();
     private final Map<Path, Set<Path>> directoryMap = new ConcurrentHashMap<>();
 
@@ -24,7 +27,70 @@ public class InspectionService extends AbstractIdleService {
     private final RealtimePathWatcher realtimePathWatcher;
     private final FileEventStabilizer fileEventStabilizer;
 
-    public boolean submit(PathInspection inspection) {
+    private final BlockingQueue<PathInspection> inspectionQueue;
+    private final Set<Path> dedup = new HashSet<>();
+
+    public InspectionService(PathRegistry pathRegistry, RealtimePathWatcher realtimePathWatcher, FileEventStabilizer fileEventStabilizer, int queueCapacity) {
+        this.pathRegistry = pathRegistry;
+        this.realtimePathWatcher = realtimePathWatcher;
+        this.fileEventStabilizer = fileEventStabilizer;
+        this.inspectionQueue = new ArrayBlockingQueue<>(queueCapacity);
+    }
+
+    @Override
+    protected void run() throws InterruptedException {
+        while (isRunning()) {
+            final PathInspection inspection = inspectionQueue.poll(500, TimeUnit.MILLISECONDS);
+
+            if (inspection == null) {
+                continue;
+            }
+
+            try {
+                inspect(inspection);
+            } finally {
+                dedup.remove(inspection.path());
+            }
+        }
+    }
+
+    public void enqueue(PathInspection inspection) {
+        final Path path = inspection.path();
+
+        if (!dedup.add(path)) {
+            log.debug("Duplicate inspection ignored: {}", inspection);
+            return;
+        }
+
+        final FileState currentFileState = fileStateFactory.getFileState(path);
+        final FileState lastSeenState = fileStates.get(path);
+        final boolean isDirectory = (currentFileState != null && currentFileState.isDirectory())
+                || (lastSeenState != null && lastSeenState.isDirectory());
+
+        final boolean shouldInspect =
+                isDirectory
+                        ? pathRegistry.shouldWatchDirectory(path)
+                        : pathRegistry.shouldWatchFile(path);
+
+        if (!shouldInspect) {
+            log.trace(
+                    "Inspection ignored because path is not watched: {}",
+                    inspection
+            );
+            dedup.remove(path);
+            return;
+        }
+
+        if (!inspectionQueue.offer(inspection)) {
+            dedup.remove(path);
+            log.warn(
+                    "Inspection queue full, dropping inspection: {}",
+                    inspection
+            );
+        }
+    }
+
+    public boolean inspect(PathInspection inspection) {
         final FileState currentFileState = fileStateFactory.getFileState(inspection.path());
         final FileState lastSeenState = fileStates.get(inspection.path());
         final boolean directory = (currentFileState != null && currentFileState.isDirectory())
@@ -37,8 +103,8 @@ public class InspectionService extends AbstractIdleService {
             }
 
             try (Stream<Path> pathStream = inspectDirectory(inspection, lastSeenState, currentFileState)) {
-                pathStream.distinct().forEach(subPath -> {
-                    submit(
+                pathStream.forEach(subPath -> {
+                    enqueue(
                             new PathInspection(inspection.requester(), subPath, inspection.discoveryMode())
                     );
                 });
@@ -154,7 +220,7 @@ public class InspectionService extends AbstractIdleService {
 
     @Override
     protected void startUp() {
-        realtimePathWatcher.setInspectionSink(this::submit);
+        realtimePathWatcher.setInspectionSink(this::enqueue);
         realtimePathWatcher.startAsync().awaitRunning();
     }
 
