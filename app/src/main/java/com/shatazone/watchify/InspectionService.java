@@ -3,15 +3,14 @@ package com.shatazone.watchify;
 import com.google.common.util.concurrent.AbstractExecutionThreadService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.*;
-import java.util.stream.Stream;
 
 @Slf4j
 @RequiredArgsConstructor
@@ -27,17 +26,20 @@ public class InspectionService extends AbstractExecutionThreadService {
     private final BlockingQueue<PendingInspection> inspectionQueue;
     private final Set<Path> dedup = new HashSet<>();
 
+    private final TraversalEngine traversalEngine;
+
     public InspectionService(PathRegistry pathRegistry, RealtimePathWatcher realtimePathWatcher, FileEventStabilizer fileEventStabilizer, int queueCapacity) {
         this.pathRegistry = pathRegistry;
         this.realtimePathWatcher = realtimePathWatcher;
         this.fileEventStabilizer = fileEventStabilizer;
         this.inspectionQueue = new ArrayBlockingQueue<>(queueCapacity);
+        this.traversalEngine = new TraversalEngine(inspectionQueue, 10);
     }
 
     @Override
     protected void run() throws InterruptedException {
         while (isRunning()) {
-            final PendingInspection pendingInspection = inspectionQueue.poll(500, TimeUnit.MILLISECONDS);
+            final PendingInspection pendingInspection = inspectionQueue.poll(200, TimeUnit.MILLISECONDS);
 
             if (pendingInspection == null) {
                 continue;
@@ -72,8 +74,7 @@ public class InspectionService extends AbstractExecutionThreadService {
         final FileState currentFileState = fileStateFactory.getFileState(path);
         final FileState lastSeenState = fileStates.get(path);
 
-        final boolean isDirectory = (currentFileState != null && currentFileState.isDirectory())
-                || (lastSeenState != null && lastSeenState.isDirectory());
+        final boolean isDirectory = isDirectory(currentFileState, lastSeenState);
 
         final boolean shouldInspect =
                 isDirectory
@@ -90,97 +91,95 @@ public class InspectionService extends AbstractExecutionThreadService {
         }
 
         pendingInspection.scope().register();
-        if (!inspectionQueue.offer(pendingInspection)) {
+        if (!enqueueWithRetry(pendingInspection)) {
             dedup.remove(path);
             pendingInspection.scope().arrive();
-
-            log.warn(
-                    "Inspection queue full, dropping inspection: {}",
-                    inspection
-            );
         }
     }
+
+
+    private boolean enqueueWithRetry(PendingInspection inspection) {
+
+        try {
+
+            for (int attempt = 0; attempt < 3; attempt++) {
+                if (inspectionQueue.offer(
+                        inspection,
+                        100,
+                        TimeUnit.MILLISECONDS
+                )) {
+                    return true;
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            log.debug(
+                    "Interrupted while enqueueing inspection: {}",
+                    inspection
+            );
+
+            return false;
+        }
+
+        log.warn(
+                "Inspection queue saturated, dropping inspection: {}",
+                inspection
+        );
+
+        return false;
+    }
+
 
     private boolean inspect(PendingInspection pendingInspection) {
         final Inspection inspection = pendingInspection.inspection();
         final FileState currentFileState = fileStateFactory.getFileState(inspection.path());
         final FileState lastSeenState = fileStates.get(inspection.path());
-        final boolean directory = (currentFileState != null && currentFileState.isDirectory())
-                || (lastSeenState != null && lastSeenState.isDirectory());
+        final boolean directory = isDirectory(currentFileState, lastSeenState);
 
         if (directory) {
-            if (!pathRegistry.shouldWatchDirectory(inspection.path())) {
-                // TODO state cleanup ?
-                return false;
-            }
-
-            try (Stream<Path> pathStream = inspectDirectory(inspection, lastSeenState, currentFileState)) {
-                pathStream.forEach(subPath -> {
-                    enqueue(
-                            new PendingInspection(
-                                    new Inspection(inspection.requester(), subPath, inspection.discoveryMode())
-                                    , pendingInspection.scope()
-                            )
-                    );
-                });
-            }
-
+            return inspectDirectory(pendingInspection, lastSeenState, currentFileState);
         } else {
-            if (!pathRegistry.shouldWatchFile(inspection.path())) {
-                // TODO cleanup ?
-                return false;
-            }
-
-            final FileEvent fileEvent = inspectFile(inspection, lastSeenState, currentFileState);
-
-            if (fileEvent == null) {
-                return false;
-            }
-
-            fileEventStabilizer.stabilize(fileEvent)
-                    .thenAccept(this::dispatch);
+            return inspectFile(inspection, lastSeenState, currentFileState);
         }
-
-        return true;
     }
 
-    private Stream<Path> inspectDirectory(Inspection inspection, FileState lastSeenState, FileState currentFileState) {
-        final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
+    private boolean inspectDirectory(PendingInspection inspection, FileState lastSeenState, FileState currentFileState) {
+        final Path path = inspection.inspection().path();
+        if (!pathRegistry.shouldWatchDirectory(path)) {
+            // TODO state cleanup ?
+            return false;
+        }
+
+        final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.inspection().discoveryMode());
 
         if (fileEventType == FileEventType.CREATED || fileEventType == FileEventType.DISCOVERED) {
             try {
-                realtimePathWatcher.watch(inspection.path());
-                directoryMap.put(inspection.path(), new HashSet<>());
+                realtimePathWatcher.watch(path);
+                directoryMap.putIfAbsent(path, new HashSet<>());
             } catch (final IOException e) {
-                log.error("Error watching directory: {}", inspection.path(), e);
+                log.error("Error watching directory: {}", path, e);
             }
         } else if (fileEventType == FileEventType.DELETED) {
-            realtimePathWatcher.unwatch(inspection.path());
-            directoryMap.remove(inspection.path());
+            realtimePathWatcher.unwatch(path);
+            directoryMap.remove(path);
         }
 
-        Stream<Path> lastSeenSubPaths = directoryMap.getOrDefault(inspection.path(), Collections.emptySet()).stream();
-        Stream<Path> currentlySeenSubPaths;
-
-        try {
-            currentlySeenSubPaths = Files.list(inspection.path());
-        } catch (NoSuchFileException e) {
-            currentlySeenSubPaths = Stream.empty();
-        } catch (IOException e) {
-            log.warn("Error listing files in path {}", inspection.path(), e);
-            currentlySeenSubPaths = Stream.empty();
-        }
-
-        return Stream.concat(lastSeenSubPaths, currentlySeenSubPaths)
-                .distinct();
+        traversalEngine.submitDirectory(inspection);
+        return true;
     }
 
-    private @Nullable FileEvent inspectFile(Inspection inspection, FileState lastSeenState, FileState currentFileState) {
+    private boolean inspectFile(Inspection inspection, FileState lastSeenState, FileState currentFileState) {
+        if (!pathRegistry.shouldWatchFile(inspection.path())) {
+            // TODO cleanup ?
+            return false;
+        }
+
         final Path path = inspection.path();
         final FileEventType fileEventType = analyzeEvent(lastSeenState, currentFileState, inspection.discoveryMode());
 
         if (fileEventType == null) {
-            return null;
+            return false;
         }
 
         final Path parentPath = path.getParent();
@@ -195,12 +194,17 @@ public class InspectionService extends AbstractExecutionThreadService {
             directoryEntries.add(path);
         }
 
-        return new FileEvent(
+        FileEvent fileEvent = new FileEvent(
                 fileEventType,
                 path,
                 currentFileState,
                 inspection.requester()
         );
+
+        fileEventStabilizer.stabilize(fileEvent)
+                .thenAccept(this::dispatch);
+
+        return true;
     }
 
     private void dispatch(FileEvent fileEvent) {
@@ -242,9 +246,15 @@ public class InspectionService extends AbstractExecutionThreadService {
     @Override
     protected void shutDown() {
         realtimePathWatcher.stopAsync().awaitTerminated();
+        traversalEngine.shutdown();
     }
 
-    private record PendingInspection(Inspection inspection, InspectionScope scope) {
+    private static boolean isDirectory(FileState currentFileState, FileState lastSeenState) {
+        return (currentFileState != null && currentFileState.isDirectory())
+                || (lastSeenState != null && lastSeenState.isDirectory());
+    }
+
+    public record PendingInspection(Inspection inspection, InspectionScope scope) {
 
     }
 }
